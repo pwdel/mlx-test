@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${repo_root}/.venv/bin/python"
+
+write_hardware_summary() {
+  system_profiler SPHardwareDataType | awk -F': *' '
+    /^[[:space:]]*Model Name:/ { model_name = $2 }
+    /^[[:space:]]*Model Identifier:/ { model_identifier = $2 }
+    /^[[:space:]]*Chip:/ { chip = $2 }
+    /^[[:space:]]*Total Number of Cores:/ { cores = $2 }
+    /^[[:space:]]*Memory:/ { memory = $2 }
+    END {
+      print "Hardware:"
+      print ""
+      print "    Hardware Overview:"
+      print ""
+      if (model_name) print "      Model Name: " model_name
+      if (model_identifier) print "      Model Identifier: " model_identifier
+      if (chip) print "      Chip: " chip
+      if (cores) print "      Total Number of Cores: " cores
+      if (memory) print "      Memory: " memory
+    }
+  '
+}
+
+write_gpu_summary() {
+  system_profiler SPDisplaysDataType | awk -F': *' '
+    /^[[:space:]]*Chipset Model:/ && !chipset_model { chipset_model = $2 }
+    /^[[:space:]]*Total Number of Cores:/ && !gpu_cores { gpu_cores = $2 }
+    /^[[:space:]]*Metal Support:/ && !metal_support { metal_support = $2 }
+    END {
+      print "Graphics/Displays:"
+      print ""
+      print "    GPU Summary:"
+      print ""
+      if (chipset_model) print "      Chipset Model: " chipset_model
+      if (gpu_cores) print "      Total Number of Cores: " gpu_cores
+      if (metal_support) print "      Metal Support: " metal_support
+    }
+  '
+}
+
+if [[ ! -x "${python_bin}" ]]; then
+  echo "Missing virtual environment at ${repo_root}/.venv" >&2
+  echo "Run: cd ${repo_root} && uv sync" >&2
+  exit 1
+fi
+
+timestamp="$(date +%Y%m%d-%H%M%S)"
+run_dir="${repo_root}/artifacts/mlx-code-benchmark-${timestamp}"
+mkdir -p "${run_dir}"
+
+write_hardware_summary > "${run_dir}/hardware.txt"
+write_gpu_summary > "${run_dir}/gpu.txt"
+vm_stat > "${run_dir}/vm_stat_before.txt"
+
+(
+  cd "${repo_root}"
+  "${python_bin}" scripts/mlx_code_benchmark.py \
+    --metrics-json "${run_dir}/metrics.json" \
+    --output-file "${run_dir}/response.py" \
+    "$@"
+) > "${run_dir}/stdout.log" 2> "${run_dir}/stderr.log" &
+benchmark_pid=$!
+
+printf 'timestamp,elapsed_s,cpu_pct,rss_kb\n' > "${run_dir}/process_samples.csv"
+start_epoch="$(date +%s)"
+
+while kill -0 "${benchmark_pid}" 2>/dev/null; do
+  now_epoch="$(date +%s)"
+  elapsed="$((now_epoch - start_epoch))"
+  sample="$(ps -o %cpu= -o rss= -p "${benchmark_pid}" | awk 'NF {gsub(/^ +| +$/, "", $1); gsub(/^ +| +$/, "", $2); print $1 "," $2}')"
+  if [[ -n "${sample}" ]]; then
+    printf '%s,%s,%s\n' "$(date -Iseconds)" "${elapsed}" "${sample}" >> "${run_dir}/process_samples.csv"
+  fi
+  sleep 1
+done
+
+wait "${benchmark_pid}"
+status=$?
+
+vm_stat > "${run_dir}/vm_stat_after.txt"
+
+if [[ "${status}" -ne 0 ]]; then
+  echo "Benchmark failed. See ${run_dir}/stderr.log" >&2
+  exit "${status}"
+fi
+
+echo "Benchmark results written to ${run_dir}"
+echo "Generated code:"
+cat "${run_dir}/response.py"

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.python-version
+artifacts/
+code_generate/*.py
+!code_generate/mlx_code_generate.py
+
+.codex/*
+!.codex/config.toml

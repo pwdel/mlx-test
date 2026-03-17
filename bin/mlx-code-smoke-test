@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${repo_root}/.venv/bin/python"
+
+if [[ ! -x "${python_bin}" ]]; then
+  echo "Missing virtual environment at ${repo_root}/.venv" >&2
+  echo "Run: cd ${repo_root} && uv sync" >&2
+  exit 1
+fi
+
+cd "${repo_root}"
+
+"${python_bin}" - <<'PY'
+import sys
+
+MODEL = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+PROMPT = (
+    "Write only Python code. "
+    "Return a function named hello_world() that prints 'Hello, world!'."
+)
+
+try:
+    from mlx_lm import generate, load
+except Exception as exc:
+    print("Missing mlx-lm dependency. Run: uv sync", file=sys.stderr)
+    raise SystemExit(1) from exc
+
+print(f"Loading model: {MODEL}", file=sys.stderr)
+model, tokenizer = load(MODEL)
+
+if hasattr(tokenizer, "apply_chat_template"):
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": PROMPT}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+else:
+    prompt = PROMPT
+
+print("Running inference...", file=sys.stderr)
+response = generate(
+    model,
+    tokenizer,
+    prompt=prompt,
+    max_tokens=96,
+    max_kv_size=512,
+    verbose=False,
+)
+
+print(response)
+
+if "def hello_world" not in response:
+    print("Model output did not include def hello_world", file=sys.stderr)
+    raise SystemExit(2)
+PY

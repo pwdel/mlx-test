@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${repo_root}/.venv/bin/python"
+
+if [[ ! -x "${python_bin}" ]]; then
+  echo "Missing virtual environment at ${repo_root}/.venv" >&2
+  echo "Run: cd ${repo_root} && uv sync" >&2
+  exit 1
+fi
+
+cd "${repo_root}"
+
+"${python_bin}" - <<'PY'
+import mlx.core as mx
+
+values = mx.array([1, 2, 3], dtype=mx.int32)
+total = mx.sum(values)
+
+print("MLX smoke test passed")
+print(f"values={values}")
+print(f"sum={total}")
+PY
